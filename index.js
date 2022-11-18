@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
 var jwt = require("jsonwebtoken");
 
@@ -20,7 +20,6 @@ const client = new MongoClient(uri, {
   serverApi: ServerApiVersion.v1,
 });
 
-
 // JWT Verification Function
 function verifyJWT(req, res, next) {
   console.log("token inside JWt", req.headers.authorization);
@@ -39,7 +38,6 @@ function verifyJWT(req, res, next) {
   });
 }
 
-
 async function run() {
   try {
     const appointmentCollection = client
@@ -48,7 +46,6 @@ async function run() {
 
     const bookingCollection = client.db("docCare").collection("bookings");
     const usersCollection = client.db("docCare").collection("users");
-
 
     //Use aggregate to query multiple collection & then marge data
     app.get("/appointmentoptions", async (req, res) => {
@@ -75,7 +72,6 @@ async function run() {
       res.send(options);
     });
 
-
     //Get booking data using query
     app.get("/bookings", verifyJWT, async (req, res) => {
       const email = req.query.email;
@@ -89,7 +85,6 @@ async function run() {
       const bookings = await bookingCollection.find(query).toArray();
       res.send(bookings);
     });
-
 
     //Get JWT Token for User
     app.get("/jwt", async (req, res) => {
@@ -105,12 +100,19 @@ async function run() {
       res.status(403).send({ accessToken: "" });
     });
 
-
     //Get All Users From DB
     app.get("/users", async (req, res) => {
       const query = {};
       const users = await usersCollection.find(query).toArray();
       res.send(users);
+    });
+
+    //Get Admin from mongoDb
+    app.get("/users/admin/:email", async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      res.send({ isAdmin: user?.role === "admin" });
     });
 
     app.post("/bookings", async (req, res) => {
@@ -129,7 +131,6 @@ async function run() {
       res.send(result);
     });
 
-
     // get user info from client side & send to database
     app.post("/users", async (req, res) => {
       const user = req.body;
@@ -137,7 +138,31 @@ async function run() {
       res.send(result);
     });
 
-    //
+    //Update user(Admin) role for authorization & send to mongoDB
+    app.put("/users/admin/:id", verifyJWT, async (req, res) => {
+      const decodedEmail = req.decoded.email;
+      const query = { email: decodedEmail };
+      const user = await usersCollection.findOne(query);
+
+      if (user?.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden Access" });
+      }
+
+      const id = req.params.id;
+      const filter = { _id: ObjectId(id) };
+      const options = { upsert: true };
+      const updatedDoc = {
+        $set: {
+          role: "admin",
+        },
+      };
+      const result = await usersCollection.updateOne(
+        filter,
+        updatedDoc,
+        options
+      );
+      res.send(result);
+    });
   } catch {}
 }
 run().catch(console.log());
