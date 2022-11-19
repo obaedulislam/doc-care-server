@@ -22,7 +22,7 @@ const client = new MongoClient(uri, {
 
 // JWT Verification Function
 function verifyJWT(req, res, next) {
-  console.log("token inside JWt", req.headers.authorization);
+  // console.log("token inside JWt", req.headers.authorization);
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     return res.status(401).send("Unauthorized Access");
@@ -46,6 +46,20 @@ async function run() {
 
     const bookingCollection = client.db("docCare").collection("bookings");
     const usersCollection = client.db("docCare").collection("users");
+    const doctorsCollection = client.db("docCare").collection("doctors");
+
+    // NOTE: Make sure you use VerifyAdmin after VerifyJWT
+    const verifyAdmin = async (req, res, next) => {
+      console.log("Inside verifyAdmin", req.decoded.email);
+      const decodedEmail = req.decoded.email;
+      const query = { email: decodedEmail };
+      const user = await usersCollection.findOne(query);
+
+      if (user?.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden Access" });
+      }
+      next();
+    };
 
     //Use aggregate to query multiple collection & then marge data
     app.get("/appointmentoptions", async (req, res) => {
@@ -115,6 +129,23 @@ async function run() {
       res.send({ isAdmin: user?.role === "admin" });
     });
 
+    //Get Appointment Specialty form AppointmentOptions & cut down some object
+    app.get("/appointmentSpecialty", async (req, res) => {
+      const query = {};
+      const result = await appointmentCollection
+        .find(query)
+        .project({ name: 1 })
+        .toArray();
+      res.send(result);
+    });
+
+    //Get  doctor data from mongoDb & show it to the client
+    app.get("/doctors", verifyJWT, verifyAdmin, async (req, res) => {
+      const query = {};
+      const doctors = await doctorsCollection.find(query).toArray();
+      res.send(doctors);
+    });
+
     app.post("/bookings", async (req, res) => {
       const booking = req.body;
       const query = {
@@ -139,15 +170,7 @@ async function run() {
     });
 
     //Update user(Admin) role for authorization & send to mongoDB
-    app.put("/users/admin/:id", verifyJWT, async (req, res) => {
-      const decodedEmail = req.decoded.email;
-      const query = { email: decodedEmail };
-      const user = await usersCollection.findOne(query);
-
-      if (user?.role !== "admin") {
-        return res.status(403).send({ message: "Forbidden Access" });
-      }
-
+    app.put("/users/admin/:id", verifyJWT, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const filter = { _id: ObjectId(id) };
       const options = { upsert: true };
@@ -161,6 +184,21 @@ async function run() {
         updatedDoc,
         options
       );
+      res.send(result);
+    });
+
+    //Add doctor data tp mongoDb & show it to the client
+    app.post("/doctors", verifyJWT, verifyAdmin, async (req, res) => {
+      const doctors = req.body;
+      const result = await doctorsCollection.insertOne(doctors);
+      res.send(result);
+    });
+
+    //Delete Doctors from database
+    app.delete("/doctors/:id", verifyJWT, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      const filter = { _id: ObjectId(id) };
+      const result = await doctorsCollection.deleteOne(filter);
       res.send(result);
     });
   } catch {}
