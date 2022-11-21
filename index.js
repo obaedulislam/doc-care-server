@@ -3,6 +3,7 @@ const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
 var jwt = require("jsonwebtoken");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const port = process.env.PORT || 4300;
 
@@ -47,6 +48,7 @@ async function run() {
     const bookingCollection = client.db("docCare").collection("bookings");
     const usersCollection = client.db("docCare").collection("users");
     const doctorsCollection = client.db("docCare").collection("doctors");
+    const paymentsCollection = client.db("docCare").collection("payments");
 
     // NOTE: Make sure you use VerifyAdmin after VerifyJWT
     const verifyAdmin = async (req, res, next) => {
@@ -83,6 +85,55 @@ async function run() {
         );
         option.slots = remainingSlots;
       });
+      res.send(options);
+    });
+
+    app.get("/v2/appointmentOptions", async (req, res) => {
+      const date = req.query.date;
+      const options = await appointmentCollection
+        .aggregate([
+          {
+            $lookup: {
+              from: "bookings",
+              localField: "name",
+              foreignField: "treatment",
+              pipeline: [
+                {
+                  $match: {
+                    $expr: {
+                      $eq: ["$appointmentDate", date],
+                    },
+                  },
+                },
+              ],
+              as: "booked",
+            },
+          },
+          {
+            $project: {
+              name: 1,
+              price: 1,
+              slots: 1,
+              booked: {
+                $map: {
+                  input: "$booked",
+                  as: "book",
+                  in: "$$book.slot",
+                },
+              },
+            },
+          },
+          {
+            $project: {
+              name: 1,
+              price: 1,
+              slots: {
+                $setDifference: ["$slots", "$booked"],
+              },
+            },
+          },
+        ])
+        .toArray();
       res.send(options);
     });
 
@@ -146,6 +197,49 @@ async function run() {
       res.send(doctors);
     });
 
+    // Get Booking from mongoDb for payment
+    app.get("/booking/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: ObjectId(id) };
+      const booking = await bookingCollection.findOne(query);
+      res.send(booking);
+    });
+
+    app.post("/create-payment-intent", async (req, res) => {
+      const booking = req.body;
+      const price = booking.price;
+      const amount = price * 100;
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        currency: "usd",
+        amount: amount,
+        payment_method_types: ["card"],
+      });
+      res.send({
+        clientSecret: paymentIntent.client_secret,
+      });
+    });
+
+    // Payment Collection Info
+    app.post("/payments", async (req, res) => {
+      const payment = req.body;
+      const result = await paymentsCollection.insertOne(payment);
+      const id = payment.bookingId;
+      const filter = { _id: ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          paid: true,
+          transactionId: payment.transactionId,
+        },
+      };
+      const updatedResult = await bookingCollection.updateOne(
+        filter,
+        updatedDoc
+      );
+      res.send(result);
+    });
+
+    // Book Option For
     app.post("/bookings", async (req, res) => {
       const booking = req.body;
       const query = {
@@ -168,6 +262,19 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+
+    //Temporary to update price field on appointment options
+    // app.get('/addPrice', async(req, res) => {
+    //   const filter = { };
+    //   const options= {upsert: true};
+    //   const updatedDoc = {
+    //     $set: {
+    //       price: 99
+    //     }
+    //   }
+    //   const result = await appointmentCollection.updateMany(filter, updatedDoc, options);
+    //   res.send(result);
+    // })
 
     //Update user(Admin) role for authorization & send to mongoDB
     app.put("/users/admin/:id", verifyJWT, verifyAdmin, async (req, res) => {
